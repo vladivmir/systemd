@@ -34,6 +34,9 @@
 #include "terminal-util.h"
 #include "time-util.h"
 #include "utf8.h"
+#ifdef HOSTONLY_JOURNALD
+#include "virt.h"
+#endif
 
 #define SNDBUF_SIZE (8*1024*1024)
 
@@ -56,6 +59,10 @@ static bool upgrade_syslog_to_journal = false;
 static bool always_reopen_console = false;
 static bool open_when_needed = false;
 static bool prohibit_ipc = false;
+#ifdef HOSTONLY_JOURNALD
+static bool container_checked = false;
+static bool in_container = false;
+#endif
 
 /* Akin to glibc's __abort_msg; which is private and we hence cannot
  * use here. */
@@ -218,6 +225,21 @@ fail:
         return r;
 }
 
+#ifdef HOSTONLY_JOURNALD
+/* Check if caller process is running within a container
+ * in order to ignore the prohibit_ipc (logging) flag,
+ * when attempting to connect to the journald socket,
+ * as journald is expected to be running in the host namespace.
+ * If it's not, connecting to socket will anyway gracefully fail. */
+static inline void check_if_container()
+{
+    if (!container_checked && detect_container() > 0) {
+        in_container = true;
+        container_checked = true;
+    }
+}
+#endif
+
 int log_open(void) {
         int r;
 
@@ -240,8 +262,14 @@ int log_open(void) {
         if (log_target != LOG_TARGET_AUTO ||
             getpid_cached() == 1 ||
             isatty(STDERR_FILENO) <= 0) {
-
-                if (!prohibit_ipc &&
+#ifdef HOSTONLY_JOURNALD
+                check_if_container();
+#endif
+                if ((!prohibit_ipc
+#ifdef HOSTONLY_JOURNALD
+                || in_container
+#endif
+                ) &&
                     IN_SET(log_target, LOG_TARGET_AUTO,
                                        LOG_TARGET_JOURNAL_OR_KMSG,
                                        LOG_TARGET_JOURNAL)) {
